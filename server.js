@@ -5,7 +5,6 @@ const nodemailer = require("nodemailer");
 const admin = require("firebase-admin");
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_KEY);
-console.log("FIREBASE_SERVICE_KEY:", process.env.FIREBASE_SERVICE_KEY);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
