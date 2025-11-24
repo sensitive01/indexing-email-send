@@ -123,13 +123,13 @@ app.post("/contact", async (req, res) => {
     if (!name || !email || !subject || !message) {
       return res.status(400).json({ success: false, message: "All fields are required." });
     }
-    await db.collection("contact_forms").add({
-      name,
-      email,
-      subject,
-      message,
-      createdAt: new Date(),
-    });
+    // await db.collection("contact_forms").add({
+    //   name,
+    //   email,
+    //   subject,
+    //   message,
+    //   createdAt: new Date(),
+    // });
 
     const userMailOptions = {
       from: process.env.EMAIL_USER,
