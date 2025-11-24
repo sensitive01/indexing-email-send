@@ -3,9 +3,9 @@ const express = require("express");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const admin = require("firebase-admin");
-const { Queue } = require('bull');
+const { Queue, QueueScheduler } = require('bullmq');
 const { createBullBoard } = require('@bull-board/api');
-const { BullAdapter } = require('@bull-board/api/bullAdapter');
+const { BullMQAdapter } = require('@bull-board/api/bullMQAdapter');
 const { ExpressAdapter } = require('@bull-board/express');
 
 const serviceAccount = {
@@ -74,17 +74,18 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Initialize Bull queue for background email processing
-const emailQueue = new Queue('emailQueue', {
-  redis: {
-    host: process.env.REDIS_HOST || '127.0.0.1',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined
-  }
-});
+// Initialize BullMQ queue for background email processing
+const connection = {
+  host: process.env.REDIS_HOST || '127.0.0.1',
+  port: parseInt(process.env.REDIS_PORT || '6379'),
+  password: process.env.REDIS_PASSWORD || undefined
+};
 
-// Process emails in background with concurrency
-emailQueue.process(parseInt(process.env.EMAIL_QUEUE_CONCURRENCY || '5'), async (job) => {
+const emailQueue = new Queue('emailQueue', { connection });
+const queueScheduler = new QueueScheduler('emailQueue', { connection });
+
+// Worker for processing emails
+const worker = new Worker('emailQueue', async job => {
   const { mailOptions } = job.data;
   try {
     await transporter.sendMail(mailOptions);
@@ -93,14 +94,24 @@ emailQueue.process(parseInt(process.env.EMAIL_QUEUE_CONCURRENCY || '5'), async (
     console.error('Email send failed:', error);
     throw error; // Will trigger retry
   }
+}, {
+  connection,
+  concurrency: parseInt(process.env.EMAIL_QUEUE_CONCURRENCY || '5'),
+  removeOnComplete: { count: 1000 }, // Keep last 1000 jobs
+  removeOnFail: { count: 5000 } // Keep last 5000 failed jobs
 });
 
-// Handle failed jobs
-emailQueue.on('failed', (job, error) => {
-  console.error(`Job ${job.id} failed:`, error.message);
-  if (job.attemptsMade >= (job.opts.attempts || 3)) {
-    console.error(`Job ${job.id} failed after maximum retries`);
-  }
+// Handle worker events
+worker.on('completed', (job) => {
+  console.log(`Job ${job.id} completed`);
+});
+
+worker.on('failed', (job, error) => {
+  console.error(`Job ${job?.id} failed:`, error?.message || 'Unknown error');
+});
+
+worker.on('error', (error) => {
+  console.error('Worker error:', error);
 });
 
 app.post("/send-email", async (req, res) => {
@@ -111,6 +122,21 @@ app.post("/send-email", async (req, res) => {
       return res.status(400).json({ success: false, message: "All fields are required." });
     }
 
+    // Create submission data for database
+    const submissionData = {
+      journalName,
+      title,
+      name,
+      email,
+      abstract,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Save to Firestore first
+    const submissionRef = await db.collection('submissions').add(submissionData);
+
+    // Prepare email jobs
     const userMailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -118,6 +144,7 @@ app.post("/send-email", async (req, res) => {
       html: `
         <h2>Thank You for Your Submission!</h2>
         <p>We have received your journal submission. Your Submitted article has been forwarded to the respective journal and they will get back to you shortly.</p>
+        <p><strong>Title:</strong> ${title}</p>
         <p><strong>Abstract:</strong> ${abstract}</p>
         <p>With Regards,</p>
         <p>IJIN Team</p>
@@ -127,14 +154,16 @@ app.post("/send-email", async (req, res) => {
     const ccMailOptions = {
       from: process.env.EMAIL_USER,
       to: process.env.CC_EMAIL,
-      subject: `New Journal Submission: ${title.substring(0, 50)}...`,
+      subject: `New Journal Submission: ${title.substring(0, 50)}${title.length > 50 ? '...' : ''}`,
       html: `
         <h2>New Journal Submission</h2>
+        <p><strong>Submission ID:</strong> ${submissionRef.id}</p>
         <p><strong>Journal Name:</strong> ${journalName}</p>
         <p><strong>Title:</strong> ${title}</p>
         <p><strong>Name:</strong> ${name}</p>
         <p><strong>User Email:</strong> ${email}</p>
         <p><strong>Abstract:</strong> ${abstract}</p>
+        <p><strong>Submitted at:</strong> ${new Date().toISOString()}</p>
       `,
     };
 
@@ -145,42 +174,40 @@ app.post("/send-email", async (req, res) => {
         backoff: {
           type: 'exponential',
           delay: 1000
-        }
+        },
+        removeOnComplete: true,
+        removeOnFail: 100 // Keep last 100 failed jobs for this type
       }),
-      emailQueue.add('adminEmail', { mailOptions: ccMailOptions }, {
+      emailQueue.add('adminEmail', {
+        mailOptions: ccMailOptions,
+        submissionId: submissionRef.id
+      }, {
         attempts: 3,
         backoff: {
           type: 'exponential',
           delay: 1000
-        }
+        },
+        removeOnComplete: true,
+        removeOnFail: 100 // Keep last 100 failed jobs for this type
       })
     ]);
 
-    // Save to Firestore
-    await db.collection('submissions').add({
-      journalName,
-      title,
-      name,
-      email,
-      abstract,
-      status: 'pending',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
     res.json({
       success: true,
-      message: "Submission received! You will receive a confirmation email shortly."
+      message: "Submission received! You will receive a confirmation email shortly.",
+      submissionId: submissionRef.id
     });
   } catch (error) {
     console.error("Error processing submission:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while processing your submission."
+      message: "An error occurred while processing your submission.",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-
+// ... rest of the code remains the same ...
 app.post("/contact", async (req, res) => {
   try {
     console.log("Received Contact Form Data:", req.body);
