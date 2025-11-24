@@ -99,8 +99,12 @@ app.post("/send-email", async (req, res) => {
       `,
     };
 
-    await transporter.sendMail(userMailOptions);
-    await transporter.sendMail(ccMailOptions);
+
+
+    await Promise.all([
+      transporter.sendMail(userMailOptions),
+      transporter.sendMail(ccMailOptions)
+    ]);
 
     res.json({ success: true, message: "Emails sent successfully!" });
   } catch (error) {
@@ -141,8 +145,12 @@ app.post("/contact", async (req, res) => {
       html: `<p><strong>Name:</strong> ${name}</p><p><strong>Email:</strong> ${email}</p><p><strong>Message:</strong> ${message}</p>`,
     };
 
-    await transporter.sendMail(userMailOptions);
-    await transporter.sendMail(ccMailOptions);
+
+    await Promise.all([
+      transporter.sendMail(userMailOptions),
+      transporter.sendMail(ccMailOptions)
+    ]);
+
 
     res.json({ success: true, message: "Contact form submitted successfully!" });
 
@@ -238,8 +246,12 @@ app.post("/conferenceemail", async (req, res) => {
         </div>
       `,
     };
-    await transporter.sendMail(userMailOptions);
-    await transporter.sendMail(adminMailOptions);
+
+    await Promise.all([
+      transporter.sendMail(userMailOptions),
+      transporter.sendMail(adminMailOptions)
+    ]);
+
     await db.collection("email_logs").add({
       type: "conference_submission",
       userEmail: email,
@@ -388,8 +400,11 @@ app.post("/journalsubmission", async (req, res) => {
         </div>
       `,
     };
-    await transporter.sendMail(userMailOptions);
-    await transporter.sendMail(adminMailOptions);
+
+    await Promise.all([
+      transporter.sendMail(userMailOptions),
+      transporter.sendMail(adminMailOptions)
+    ]);
     await db.collection("email_logs").add({
       type: "journal_submission",
       userEmail: email,
