@@ -4,9 +4,22 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const admin = require("firebase-admin");
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_KEY);
+const serviceAccount = {
+  type: process.env.FIREBASE_TYPE,
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  client_id: process.env.FIREBASE_CLIENT_ID,
+  auth_uri: process.env.FIREBASE_AUTH_URI,
+  token_uri: process.env.FIREBASE_TOKEN_URI,
+  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+  client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+  universe_domain: "googleapis.com"
+};
+
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
@@ -19,7 +32,7 @@ const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS, 
+    pass: process.env.EMAIL_PASS,
   },
 });
 
@@ -33,7 +46,7 @@ app.post("/send-email", async (req, res) => {
 
     const userMailOptions = {
       from: process.env.EMAIL_USER,
-      to: email, 
+      to: email,
       subject: "Thank You for Your Submission",
       html: `
         <h2>Thank You for Your Submission!</h2>
@@ -71,7 +84,7 @@ app.post("/send-email", async (req, res) => {
 
 app.post("/contact", async (req, res) => {
   try {
-    console.log("Received Contact Form Data:", req.body); 
+    console.log("Received Contact Form Data:", req.body);
 
     const { name, email, subject, message } = req.body;
 
@@ -127,9 +140,9 @@ app.post("/conferenceemail", async (req, res) => {
     } = req.body;
 
     if (!title || !organizer || !email) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Required fields are missing." 
+      return res.status(400).json({
+        success: false,
+        message: "Required fields are missing."
       });
     }
     const userMailOptions = {
@@ -210,13 +223,13 @@ app.post("/conferenceemail", async (req, res) => {
     res.json({ success: true, message: "Emails sent successfully!" });
   } catch (error) {
     console.error("Email sending error:", error);
-        await db.collection("email_logs").add({
+    await db.collection("email_logs").add({
       type: "conference_submission",
       error: error.message,
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
       success: false
     });
-    
+
     res.status(500).json({ success: false, message: "Error sending email." });
   }
 });
@@ -244,9 +257,9 @@ app.post("/journalsubmission", async (req, res) => {
     } = req.body;
 
     if (!title || !email) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Required fields are missing." 
+      return res.status(400).json({
+        success: false,
+        message: "Required fields are missing."
       });
     }
 
@@ -367,7 +380,7 @@ app.post("/journalsubmission", async (req, res) => {
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
       success: false
     });
-    
+
     res.status(500).json({ success: false, message: "Error sending email." });
   }
 });
