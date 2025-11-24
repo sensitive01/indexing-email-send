@@ -18,12 +18,7 @@ const serviceAccount = {
   universe_domain: "googleapis.com"
 };
 
-// Debug logs to help identify missing envs when app exits early
-console.log("DEBUG ENV: FIREBASE_CLIENT_EMAIL present?", !!process.env.FIREBASE_CLIENT_EMAIL);
-console.log("DEBUG ENV: FIREBASE_PROJECT_ID present?", !!process.env.FIREBASE_PROJECT_ID);
-console.log("DEBUG ENV: FIREBASE_PRIVATE_KEY present?", !!process.env.FIREBASE_PRIVATE_KEY);
-console.log("DEBUG ENV: EMAIL_USER present?", !!process.env.EMAIL_USER);
-console.log("DEBUG ENV: CC_EMAIL present?", !!process.env.CC_EMAIL);
+
 
 try {
   admin.initializeApp({
@@ -55,12 +50,18 @@ app.use((err, req, res, next) => {
   next();
 });
 
+console.log(process.env.EMAIL_USER)
+console.log(process.env.EMAIL_PASS)
+
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 app.post("/send-email", async (req, res) => {
