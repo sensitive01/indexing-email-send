@@ -3,6 +3,10 @@ const express = require("express");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const admin = require("firebase-admin");
+const { Queue } = require('bull');
+const { createBullBoard } = require('@bull-board/api');
+const { BullAdapter } = require('@bull-board/api/bullAdapter');
+const { ExpressAdapter } = require('@bull-board/express');
 
 const serviceAccount = {
   type: process.env.FIREBASE_TYPE,
@@ -53,7 +57,13 @@ app.use((err, req, res, next) => {
 console.log(process.env.EMAIL_USER)
 console.log(process.env.EMAIL_PASS)
 
+// Configure email transporter with connection pooling
 const transporter = nodemailer.createTransport({
+  pool: true,
+  maxConnections: 5,
+  maxMessages: 100,
+  rateDelta: 1000,
+  rateLimit: 5,
   service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
@@ -61,6 +71,35 @@ const transporter = nodemailer.createTransport({
   },
   tls: {
     rejectUnauthorized: false
+  }
+});
+
+// Initialize Bull queue for background email processing
+const emailQueue = new Queue('emailQueue', {
+  redis: {
+    host: process.env.REDIS_HOST || '127.0.0.1',
+    port: process.env.REDIS_PORT || 6379,
+    password: process.env.REDIS_PASSWORD || undefined
+  }
+});
+
+// Process emails in background with concurrency
+emailQueue.process(parseInt(process.env.EMAIL_QUEUE_CONCURRENCY || '5'), async (job) => {
+  const { mailOptions } = job.data;
+  try {
+    await transporter.sendMail(mailOptions);
+    return { success: true };
+  } catch (error) {
+    console.error('Email send failed:', error);
+    throw error; // Will trigger retry
+  }
+});
+
+// Handle failed jobs
+emailQueue.on('failed', (job, error) => {
+  console.error(`Job ${job.id} failed:`, error.message);
+  if (job.attemptsMade >= (job.opts.attempts || 3)) {
+    console.error(`Job ${job.id} failed after maximum retries`);
   }
 });
 
@@ -78,9 +117,9 @@ app.post("/send-email", async (req, res) => {
       subject: "Thank You for Your Submission",
       html: `
         <h2>Thank You for Your Submission!</h2>
-        <p>We have received your journal submission. Your Submitted article forwarded to respective journal and they get back to you shortly.</p>
+        <p>We have received your journal submission. Your Submitted article has been forwarded to the respective journal and they will get back to you shortly.</p>
         <p><strong>Abstract:</strong> ${abstract}</p>
-        <p> With Regards</p>
+        <p>With Regards,</p>
         <p>IJIN Team</p>
       `,
     };
@@ -88,7 +127,7 @@ app.post("/send-email", async (req, res) => {
     const ccMailOptions = {
       from: process.env.EMAIL_USER,
       to: process.env.CC_EMAIL,
-      subject: "New Journal Submission Received",
+      subject: `New Journal Submission: ${title.substring(0, 50)}...`,
       html: `
         <h2>New Journal Submission</h2>
         <p><strong>Journal Name:</strong> ${journalName}</p>
@@ -99,17 +138,45 @@ app.post("/send-email", async (req, res) => {
       `,
     };
 
-
-
+    // Add emails to queue with retry logic
     await Promise.all([
-      transporter.sendMail(userMailOptions),
-      transporter.sendMail(ccMailOptions)
+      emailQueue.add('userEmail', { mailOptions: userMailOptions }, {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 1000
+        }
+      }),
+      emailQueue.add('adminEmail', { mailOptions: ccMailOptions }, {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 1000
+        }
+      })
     ]);
 
-    res.json({ success: true, message: "Emails sent successfully!" });
+    // Save to Firestore
+    await db.collection('submissions').add({
+      journalName,
+      title,
+      name,
+      email,
+      abstract,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: "Submission received! You will receive a confirmation email shortly."
+    });
   } catch (error) {
-    console.error("Email sending error:", error);
-    res.status(500).json({ success: false, message: "Error sending email." });
+    console.error("Error processing submission:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while processing your submission."
+    });
   }
 });
 
@@ -429,7 +496,31 @@ app.post("/journalsubmission", async (req, res) => {
 });
 
 
+// Set up Bull dashboard
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath('/admin/queues');
+
+const { addQueue, removeQueue, setQueues, replaceQueues } = createBullBoard({
+  queues: [new BullAdapter(emailQueue)],
+  serverAdapter: serverAdapter,
+});
+
+app.use('/admin/queues', serverAdapter.getRouter());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    queue: {
+      name: emailQueue.name,
+      isPaused: emailQueue.isPaused(),
+      jobCounts: emailQueue.getJobCounts()
+    }
+  });
+});
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const server = app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  console.log(`Bull dashboard available at http://localhost:${PORT}/admin/queues`);
 });
