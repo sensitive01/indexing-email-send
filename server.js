@@ -53,14 +53,40 @@ app.use((err, req, res, next) => {
 console.log(process.env.EMAIL_USER)
 console.log(process.env.EMAIL_PASS)
 
+// Configure Nodemailer with enhanced settings
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  // Connection pooling for better performance
+  pool: true,
+  maxConnections: 1,
+  maxMessages: 5,
+  rateDelta: 10000, // 10 seconds
+  rateLimit: 5, // max 5 messages per rateDelta
+  // Security settings
+  secure: true, // use TLS
   tls: {
+    // Do not fail on invalid certs
     rejectUnauthorized: false
+  },
+  // Timeout settings (in milliseconds)
+  connectionTimeout: 30000, // 30 seconds
+  greetingTimeout: 30000,   // 30 seconds
+  socketTimeout: 60000,     // 60 seconds
+  // Debug mode for development
+  debug: process.env.NODE_ENV !== 'production',
+  logger: process.env.NODE_ENV !== 'production'
+});
+
+// Verify connection configuration
+transporter.verify(function (error, success) {
+  if (error) {
+    console.error('SMTP Connection Error:', error);
+  } else {
+    console.log('Server is ready to take our messages');
   }
 });
 
@@ -101,7 +127,7 @@ app.post("/send-email", async (req, res) => {
 
 
 
-        await Promise.all([
+    await Promise.all([
       transporter.sendMail(userMailOptions),
       transporter.sendMail(ccMailOptions)
     ]);
