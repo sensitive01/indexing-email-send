@@ -55,30 +55,21 @@ console.log(process.env.EMAIL_PASS)
 
 // Configure Nodemailer with enhanced settings
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: 'smtp.gmail.com',
+  port: 465, // Try 465 with SSL
+  secure: true, // true for 465, false for other ports
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  // Connection pooling for better performance
-  pool: true,
-  maxConnections: 1,
-  maxMessages: 5,
-  rateDelta: 10000, // 10 seconds
-  rateLimit: 5, // max 5 messages per rateDelta
-  // Security settings
-  secure: true, // use TLS
   tls: {
-    // Do not fail on invalid certs
-    rejectUnauthorized: false
+    rejectUnauthorized: false // Only for development, consider proper certs in production
   },
-  // Timeout settings (in milliseconds)
-  connectionTimeout: 30000, // 30 seconds
+  connectionTimeout: 60000, // 60 seconds
   greetingTimeout: 30000,   // 30 seconds
   socketTimeout: 60000,     // 60 seconds
-  // Debug mode for development
-  debug: process.env.NODE_ENV !== 'production',
-  logger: process.env.NODE_ENV !== 'production'
+  debug: true, // Enable debug logging
+  logger: true
 });
 
 // Verify connection configuration
