@@ -4,82 +4,93 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const admin = require("firebase-admin");
 
+const requiredEnvVars = [
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_PRIVATE_KEY',
+  'FIREBASE_CLIENT_EMAIL',
+  'EMAIL_USER',
+  'EMAIL_PASS',
+  'CC_EMAIL'
+];
+
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+if (missingVars.length > 0) {
+  console.error('Missing required environment variables:', missingVars.join(', '));
+  process.exit(1);
+}
+
 const serviceAccount = {
-  type: process.env.FIREBASE_TYPE,
+  type: process.env.FIREBASE_TYPE || "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
   private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
   private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
   client_email: process.env.FIREBASE_CLIENT_EMAIL,
   client_id: process.env.FIREBASE_CLIENT_ID,
-  auth_uri: process.env.FIREBASE_AUTH_URI,
-  token_uri: process.env.FIREBASE_TOKEN_URI,
-  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+  auth_uri: process.env.FIREBASE_AUTH_URI || "https://accounts.google.com/o/oauth2/auth",
+  token_uri: process.env.FIREBASE_TOKEN_URI || "https://oauth2.googleapis.com/token",
+  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL || "https://www.googleapis.com/oauth2/v1/certs",
   client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
   universe_domain: "googleapis.com"
 };
 
-
-
+let db;
 try {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
+  db = admin.firestore();
+  console.log('Firebase initialized successfully');
 } catch (initErr) {
-  console.error("Firebase initialization error:", initErr);
-  // do not throw here so the process logs the error and exits with a visible message in Render logs
+  console.error("Firebase initialization error:", initErr.message);
+  process.exit(1);
 }
-
-const db = admin.firestore();
 
 const app = express();
 app.use(cors());
-
-// <<< ADDED: Accept urlencoded form bodies (multiline text / form submissions)
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+app.use(express.json({ limit: "5mb" }));
 
-app.use(express.json());
-
-// <<< ADDED: global JSON syntax error handler to return 400 instead of crashing
 app.use((err, req, res, next) => {
   if (err && err.type === 'entity.parse.failed') {
-    // express.json() parse error
     console.error("Invalid JSON received:", err.message);
     return res.status(400).json({ success: false, message: "Invalid JSON format." });
   }
-  // some other error or no error
-  next();
+  next(err);
 });
 
-console.log(process.env.EMAIL_USER)
-console.log(process.env.EMAIL_PASS)
+console.log('Email configured for:', process.env.EMAIL_USER?.substring(0, 3) + '***');
 
-// Configure Nodemailer with enhanced settings
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465, // Try 465 with SSL
-  secure: true, // true for 465, false for other ports
+  service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  tls: {
-    rejectUnauthorized: false // Only for development, consider proper certs in production
-  },
-  connectionTimeout: 60000, // 60 seconds
-  greetingTimeout: 30000,   // 30 seconds
-  socketTimeout: 60000,     // 60 seconds
-  debug: true, // Enable debug logging
-  logger: true
 });
 
-// Verify connection configuration
 transporter.verify(function (error, success) {
   if (error) {
-    console.error('SMTP Connection Error:', error);
+    console.error('SMTP Connection Error:', error.message);
+    console.error('Make sure you are using a Gmail App Password');
   } else {
-    console.log('Server is ready to take our messages');
+    console.log('Email server is ready');
   }
 });
+
+const sanitizeHtml = (text) => {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+    .replace(/\n/g, '<br>');
+};
+
+const isValidEmail = (email) => {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+};
 
 app.post("/send-email", async (req, res) => {
   try {
@@ -89,15 +100,20 @@ app.post("/send-email", async (req, res) => {
       return res.status(400).json({ success: false, message: "All fields are required." });
     }
 
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: "Invalid email address." });
+    }
+
     const userMailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
       subject: "Thank You for Your Submission",
       html: `
         <h2>Thank You for Your Submission!</h2>
-        <p>We have received your journal submission. Your Submitted article forwarded to respective journal and they get back to you shortly.</p>
-        <p><strong>Abstract:</strong> ${abstract}</p>
-        <p> With Regards</p>
+        <p>We have received your journal submission. Your submitted article has been forwarded to the respective journal and they will get back to you shortly.</p>
+        <p><strong>Abstract:</strong></p>
+        <p>${sanitizeHtml(abstract)}</p>
+        <p>With Regards,</p>
         <p>IJIN Team</p>
       `,
     };
@@ -108,15 +124,14 @@ app.post("/send-email", async (req, res) => {
       subject: "New Journal Submission Received",
       html: `
         <h2>New Journal Submission</h2>
-        <p><strong>Journal Name:</strong> ${journalName}</p>
-        <p><strong>Title:</strong> ${title}</p>
-        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Journal Name:</strong> ${sanitizeHtml(journalName)}</p>
+        <p><strong>Title:</strong> ${sanitizeHtml(title)}</p>
+        <p><strong>Name:</strong> ${sanitizeHtml(name)}</p>
         <p><strong>User Email:</strong> ${email}</p>
-        <p><strong>Abstract:</strong> ${abstract}</p>
+        <p><strong>Abstract:</strong></p>
+        <p>${sanitizeHtml(abstract)}</p>
       `,
     };
-
-
 
     await Promise.all([
       transporter.sendMail(userMailOptions),
@@ -125,58 +140,64 @@ app.post("/send-email", async (req, res) => {
 
     res.json({ success: true, message: "Emails sent successfully!" });
   } catch (error) {
-    console.error("Email sending error:", error);
-    res.status(500).json({ success: false, message: "Error sending email." });
+    console.error("Email sending error:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Error sending email. Please try again later."
+    });
   }
 });
 
-
 app.post("/contact", async (req, res) => {
   try {
-    console.log("Received Contact Form Data:", req.body);
-
     const { name, email, subject, message } = req.body;
 
     if (!name || !email || !subject || !message) {
       return res.status(400).json({ success: false, message: "All fields are required." });
     }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: "Invalid email address." });
+    }
+
     await db.collection("contact_forms").add({
       name,
       email,
       subject,
       message,
-      createdAt: new Date(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
     const userMailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
       subject: "Thank You for Contacting Us!",
-      html: `<p>Hi ${name}, we have received your message and will get back to you soon.</p>`,
+      html: `<p>Hi ${sanitizeHtml(name)}, we have received your message and will get back to you soon.</p>`,
     };
 
     const ccMailOptions = {
       from: process.env.EMAIL_USER,
       to: process.env.CC_EMAIL,
-      subject: `New Contact Form Submission: ${subject}`,
-      html: `<p><strong>Name:</strong> ${name}</p><p><strong>Email:</strong> ${email}</p><p><strong>Message:</strong> ${message}</p>`,
+      subject: `New Contact Form: ${sanitizeHtml(subject)}`,
+      html: `
+        <p><strong>Name:</strong> ${sanitizeHtml(name)}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Message:</strong></p>
+        <p>${sanitizeHtml(message)}</p>
+      `,
     };
-
 
     await Promise.all([
       transporter.sendMail(userMailOptions),
       transporter.sendMail(ccMailOptions)
     ]);
 
-
     res.json({ success: true, message: "Contact form submitted successfully!" });
-
   } catch (error) {
-    console.error("Error handling contact form:", error);
+    console.error("Contact form error:", error.message);
     res.status(500).json({ success: false, message: "Internal server error." });
   }
 });
-
 
 app.post("/conferenceemail", async (req, res) => {
   try {
@@ -198,6 +219,11 @@ app.post("/conferenceemail", async (req, res) => {
         message: "Required fields are missing."
       });
     }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: "Invalid email address." });
+    }
+
     const userMailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -205,8 +231,8 @@ app.post("/conferenceemail", async (req, res) => {
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 5px;">
           <h2 style="color: #333;">Thank You for Your Conference Submission</h2>
-          <p>Dear ${contactPerson},</p>
-          <p>We have received your conference/symposium submission for "${title}". Your submission has been forwarded to our IJIN team for review.</p>
+          <p>Dear ${sanitizeHtml(contactPerson)},</p>
+          <p>We have received your conference/symposium submission for "${sanitizeHtml(title)}". Your submission has been forwarded to our IJIN team for review.</p>
           <p>We will get back to you shortly with further information.</p>
           <p>With Regards,</p>
           <p>IJIN Team</p>
@@ -217,7 +243,7 @@ app.post("/conferenceemail", async (req, res) => {
     const adminMailOptions = {
       from: process.env.EMAIL_USER,
       to: process.env.CC_EMAIL,
-      subject: `New Conference Submission: ${title}`,
+      subject: `New Conference Submission: ${sanitizeHtml(title)}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 5px;">
           <h2 style="color: #333;">New Conference Submission</h2>
@@ -225,23 +251,23 @@ app.post("/conferenceemail", async (req, res) => {
           <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Conference Title</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${title}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(title)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Organizer</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${organizer}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(organizer)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Venue</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${venue}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(venue)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${date}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(date)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Contact Person</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${contactPerson}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(contactPerson)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Email</strong></td>
@@ -249,16 +275,16 @@ app.post("/conferenceemail", async (req, res) => {
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Country</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${country}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(country)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Language</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${language}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(language)}</td>
             </tr>
           </table>
           <div style="border: 1px solid #ddd; padding: 10px; margin-bottom: 20px;">
             <strong>Description:</strong>
-            <div>${description}</div>
+            <div>${sanitizeHtml(description)}</div>
           </div>
         </div>
       `,
@@ -279,7 +305,7 @@ app.post("/conferenceemail", async (req, res) => {
 
     res.json({ success: true, message: "Emails sent successfully!" });
   } catch (error) {
-    console.error("Email sending error:", error);
+    console.error("Email sending error:", error.message);
     await db.collection("email_logs").add({
       type: "conference_submission",
       error: error.message,
@@ -320,6 +346,10 @@ app.post("/journalsubmission", async (req, res) => {
       });
     }
 
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: "Invalid email address." });
+    }
+
     const userMailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -327,8 +357,8 @@ app.post("/journalsubmission", async (req, res) => {
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 5px;">
           <h2 style="color: #333;">Thank You for Your Journal Submission</h2>
-          <p>Dear ${chiefEditor || "Journal Editor"},</p>
-          <p>We have received your journal submission for "${title}". Your submission has been forwarded to our IJIN team for review.</p>
+          <p>Dear ${sanitizeHtml(chiefEditor) || "Journal Editor"},</p>
+          <p>We have received your journal submission for "${sanitizeHtml(title)}". Your submission has been forwarded to our IJIN team for review.</p>
           <p>We will get back to you shortly with further information.</p>
           <p>With Regards,</p>
           <p>IJIN Team</p>
@@ -339,7 +369,7 @@ app.post("/journalsubmission", async (req, res) => {
     const adminMailOptions = {
       from: process.env.EMAIL_USER,
       to: process.env.CC_EMAIL,
-      subject: `New Journal Submission: ${title}`,
+      subject: `New Journal Submission: ${sanitizeHtml(title)}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 5px;">
           <h2 style="color: #333;">New Journal Submission</h2>
@@ -347,35 +377,35 @@ app.post("/journalsubmission", async (req, res) => {
           <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Journal Title</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${title}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(title)}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Abbreviation</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${abbreviation || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(abbreviation) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Journal URL</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${url || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(url) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>ISSN (Print)</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${issnPrint || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(issnPrint) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>ISSN (Online)</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${issnOnline || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(issnOnline) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Publisher</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${publisher || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(publisher) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Discipline</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${discipline || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(discipline) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Chief Editor</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${chiefEditor || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(chiefEditor) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Email</strong></td>
@@ -383,36 +413,36 @@ app.post("/journalsubmission", async (req, res) => {
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Country</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${country || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(country) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Language</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${language || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(language) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Frequency</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${frequency || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(frequency) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Year of Starting</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${yearOfStarting || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(yearOfStarting) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>License Type</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${licenseType || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(licenseType) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Accessing Type</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${acessingType || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(acessingType) || "-"}</td>
             </tr>
             <tr>
               <td style="padding: 8px; border: 1px solid #ddd;"><strong>Article Formats</strong></td>
-              <td style="padding: 8px; border: 1px solid #ddd;">${articleFormats || "-"}</td>
+              <td style="padding: 8px; border: 1px solid #ddd;">${sanitizeHtml(articleFormats) || "-"}</td>
             </tr>
           </table>
           <div style="border: 1px solid #ddd; padding: 10px; margin-bottom: 20px;">
             <strong>Description:</strong>
-            <div>${description || "-"}</div>
+            <div>${sanitizeHtml(description) || "-"}</div>
           </div>
         </div>
       `,
@@ -422,6 +452,7 @@ app.post("/journalsubmission", async (req, res) => {
       transporter.sendMail(userMailOptions),
       transporter.sendMail(adminMailOptions)
     ]);
+
     await db.collection("email_logs").add({
       type: "journal_submission",
       userEmail: email,
@@ -433,7 +464,7 @@ app.post("/journalsubmission", async (req, res) => {
 
     res.json({ success: true, message: "Journal submission emails sent successfully!" });
   } catch (error) {
-    console.error("Email sending error:", error);
+    console.error("Email sending error:", error.message);
     await db.collection("email_logs").add({
       type: "journal_submission",
       error: error.message,
@@ -444,7 +475,6 @@ app.post("/journalsubmission", async (req, res) => {
     res.status(500).json({ success: false, message: "Error sending email." });
   }
 });
-
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
