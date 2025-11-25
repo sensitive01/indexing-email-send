@@ -61,11 +61,17 @@ app.use((err, req, res, next) => {
 console.log('Email configured for:', process.env.EMAIL_USER?.substring(0, 3) + '***');
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  tls: {
+    rejectUnauthorized: false,
+    minVersion: 'TLSv1.2'
+  }
 });
 
 transporter.verify(function (error, success) {
@@ -141,9 +147,9 @@ app.post("/send-email", async (req, res) => {
     res.json({ success: true, message: "Emails sent successfully!" });
   } catch (error) {
     console.error("Email sending error:", error.message);
-    res.status(500).json({
-      success: false,
-      message: "Error sending email. Please try again later."
+    res.status(500).json({ 
+      success: false, 
+      message: "Error sending email. Please try again later." 
     });
   }
 });
